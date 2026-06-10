@@ -85,7 +85,10 @@
 
 <header>
   <h1>うちの冷蔵庫</h1>
-  <span id="count"></span>
+  <div style="text-align: right;">
+    <span id="count"></span>
+    <div id="sync" style="font-size: 11px; color: #807e75;"></div>
+  </div>
 </header>
 
 <div class="presets">
@@ -105,6 +108,7 @@
 <footer>
   <button id="exportBtn">バックアップを書き出す</button>
   <button id="importBtn">読み込む</button>
+  <button id="shareBtn">共有設定</button>
   <input type="file" id="importFile" accept=".json" hidden>
 </footer>
 
@@ -118,7 +122,72 @@ const PRESETS = [
 let items = [];
 try { items = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) {}
 
-const save = () => localStorage.setItem(KEY, JSON.stringify(items));
+const GIST_ID = 'f4e73a51bda71d81ba54d3d554a63ead';
+const GIST_FILE = 'fridge-data.json';
+const TOKEN_KEY = 'fridge_token';
+const getToken = () => localStorage.getItem(TOKEN_KEY) || '';
+
+let pushPending = false;
+let pushTimer = null;
+
+const setSync = (msg, isErr) => {
+  const el = document.getElementById('sync');
+  el.textContent = msg;
+  el.style.color = isErr ? '#b03030' : '#807e75';
+};
+
+async function gistFetch(method, body) {
+  const headers = { 'Accept': 'application/vnd.github+json' };
+  if (getToken()) headers['Authorization'] = 'Bearer ' + getToken();
+  const res = await fetch('https://api.github.com/gists/' + GIST_ID, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
+async function pushRemote() {
+  if (!getToken()) return;
+  pushPending = false;
+  try {
+    setSync('同期中…');
+    await gistFetch('PATCH', { files: { [GIST_FILE]: { content: JSON.stringify(items) } } });
+    setSync('同期済み ' + new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }));
+  } catch (e) {
+    setSync('同期エラー(' + e.message + ')', true);
+  }
+}
+
+function schedulePush() {
+  if (!getToken()) return;
+  pushPending = true;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushRemote, 800);
+}
+
+async function pullRemote() {
+  if (!getToken() || pushPending) return;
+  try {
+    setSync('同期中…');
+    const g = await gistFetch('GET');
+    const remote = JSON.parse(g.files[GIST_FILE].content);
+    if (!Array.isArray(remote)) throw new Error('データ形式が不正');
+    if (remote.length === 0 && items.length > 0) {
+      await pushRemote();
+    } else {
+      items = remote;
+      localStorage.setItem(KEY, JSON.stringify(items));
+      render();
+      setSync('同期済み ' + new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }));
+    }
+  } catch (e) {
+    setSync('同期エラー(' + e.message + ')', true);
+  }
+}
+
+const save = () => { localStorage.setItem(KEY, JSON.stringify(items)); schedulePush(); };
 const todayStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -218,7 +287,25 @@ document.getElementById('importFile').onchange = (e) => {
   e.target.value = '';
 };
 
+document.getElementById('shareBtn').onclick = () => {
+  const t = prompt('共有用の合言葉(GitHubトークン)を入力してください。\n空のままOKすると共有をオフにします。', getToken());
+  if (t === null) return;
+  if (t.trim()) {
+    localStorage.setItem(TOKEN_KEY, t.trim());
+    pullRemote();
+  } else {
+    localStorage.removeItem(TOKEN_KEY);
+    setSync('共有オフ');
+  }
+};
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') pullRemote();
+});
+
 render();
+if (getToken()) pullRemote();
+else setSync('共有未設定');
 </script>
 </body>
 </html>
