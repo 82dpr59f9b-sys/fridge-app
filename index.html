@@ -125,7 +125,10 @@ try { items = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) {}
 const GIST_ID = 'f4e73a51bda71d81ba54d3d554a63ead';
 const GIST_FILE = 'fridge-data.json';
 const TOKEN_KEY = 'fridge_token';
+const DIRTY_KEY = 'fridge_dirty';
+const SYNCED_KEY = 'fridge_synced';
 const getToken = () => localStorage.getItem(TOKEN_KEY) || '';
+const isDirty = () => !!localStorage.getItem(DIRTY_KEY);
 
 let pushPending = false;
 let pushTimer = null;
@@ -143,6 +146,7 @@ async function gistFetch(method, body) {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    keepalive: true,
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
@@ -151,9 +155,12 @@ async function gistFetch(method, body) {
 async function pushRemote() {
   if (!getToken()) return;
   pushPending = false;
+  clearTimeout(pushTimer);
   try {
     setSync('同期中…');
     await gistFetch('PATCH', { files: { [GIST_FILE]: { content: JSON.stringify(items) } } });
+    localStorage.removeItem(DIRTY_KEY);
+    localStorage.setItem(SYNCED_KEY, '1');
     setSync('同期済み ' + new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }));
   } catch (e) {
     setSync('同期エラー(' + e.message + ')', true);
@@ -164,21 +171,23 @@ function schedulePush() {
   if (!getToken()) return;
   pushPending = true;
   clearTimeout(pushTimer);
-  pushTimer = setTimeout(pushRemote, 800);
+  pushTimer = setTimeout(pushRemote, 300);
 }
 
 async function pullRemote() {
-  if (!getToken() || pushPending) return;
+  if (!getToken()) return;
+  if (pushPending || isDirty()) { pushRemote(); return; }
   try {
     setSync('同期中…');
     const g = await gistFetch('GET');
     const remote = JSON.parse(g.files[GIST_FILE].content);
     if (!Array.isArray(remote)) throw new Error('データ形式が不正');
-    if (remote.length === 0 && items.length > 0) {
+    if (remote.length === 0 && items.length > 0 && !localStorage.getItem(SYNCED_KEY)) {
       await pushRemote();
     } else {
       items = remote;
       localStorage.setItem(KEY, JSON.stringify(items));
+      localStorage.setItem(SYNCED_KEY, '1');
       render();
       setSync('同期済み ' + new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }));
     }
@@ -187,7 +196,11 @@ async function pullRemote() {
   }
 }
 
-const save = () => { localStorage.setItem(KEY, JSON.stringify(items)); schedulePush(); };
+const save = () => {
+  localStorage.setItem(KEY, JSON.stringify(items));
+  if (getToken()) localStorage.setItem(DIRTY_KEY, '1');
+  schedulePush();
+};
 const todayStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -301,6 +314,10 @@ document.getElementById('shareBtn').onclick = () => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') pullRemote();
+  else if (pushPending || isDirty()) pushRemote();
+});
+window.addEventListener('pagehide', () => {
+  if (pushPending || isDirty()) pushRemote();
 });
 
 render();
